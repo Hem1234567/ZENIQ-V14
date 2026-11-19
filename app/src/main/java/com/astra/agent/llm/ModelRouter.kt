@@ -102,14 +102,15 @@ object ModelRouter {
         }
         if (models.isEmpty()) return null
         val role = roleFor(prompt, hasImage, hasDoc, hasTools)
+        // Speed first: loading a model file takes seconds on a phone, which is far more than the answer saves.
+        // The loaded model therefore stays unless it truly cannot do this request (a picture with a text-only
+        // model, phone tools with a thinking-only model).
+        val loaded = models.firstOrNull { it.loaded }
+        if (loaded != null && canDo(loaded, role)) return Decision(loaded.name, role, "already loaded")
         val usable = models.filter { canDo(it, role) }
         val pool = usable.ifEmpty { models.filter { !it.thinkingOnly } }.ifEmpty { models }
         val best = pool.maxByOrNull { score(it, role) } ?: return null
-        val reason = when {
-            best.loaded && role in best.roles -> "already loaded"
-            usable.isEmpty() -> "no ${role.name.lowercase()} model installed"
-            else -> "best fit for ${role.name.lowercase()}"
-        }
+        val reason = if (usable.isEmpty()) "no ${role.name.lowercase()} model installed" else "best fit for ${role.name.lowercase()}"
         return Decision(best.name, role, reason)
     }
 }

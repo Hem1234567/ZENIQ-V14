@@ -291,7 +291,7 @@ fun SettingsScreen(vm: AstraViewModel) {
             Hairline()
             ToggleRow("Show measured speed under answers", s.perfOverlay) { vm.updateSettings(s.copy(perfOverlay = it)) }
         }
-        Text("Auto uses the smallest installed model that fits each request and keeps the model that is already loaded, so a normal question never waits for a reload. The speed line reports numbers measured on this phone; nothing is uploaded.",
+        Text("Auto keeps the model that is already loaded and only switches when that model cannot do the request, because loading a model takes seconds on a phone. Download a small model (Models > Fast & light, 400 MB) for the quickest local replies. The speed line reports numbers measured on this phone; nothing is uploaded.",
             Modifier.padding(horizontal = 32.dp, vertical = 6.dp), fontSize = 12.sp, color = c.sub)
 
         // ── Performance ───────────────────────────────────────────────────────

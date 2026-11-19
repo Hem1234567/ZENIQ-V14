@@ -84,6 +84,20 @@ class ModelRouterTest {
         assertEquals("already loaded", d.reason)
     }
 
+    @Test fun loadedModelStaysEvenWhenASmallerOneWouldBeFaster() {
+        // Reloading costs seconds; switching for a small size gain makes every message slower, not faster.
+        val models = listOf(m("big.gguf", 4.0, loaded = true), m("small.gguf", 1.0))
+        val d = ModelRouter.route("hello", models)!!
+        assertEquals("big.gguf", d.model)
+        assertEquals("already loaded", d.reason)
+    }
+
+    @Test fun loadedModelIsReplacedWhenItCannotDoTheJob() {
+        val models = listOf(m("DeepSeek-R1-7B.gguf", 4.5, loaded = true), m("qwen2.5-1.5b-instruct.gguf", 1.5))
+        val d = ModelRouter.route("open YouTube", models)!!
+        assertEquals("qwen2.5-1.5b-instruct.gguf", d.model)
+    }
+
     @Test fun thinkingOnlyModelIsAvoidedForToolsWhenAnotherExists() {
         val models = listOf(m("DeepSeek-R1-7B.gguf", 4.5), m("qwen2.5-1.5b-instruct.gguf", 1.5))
         assertEquals("qwen2.5-1.5b-instruct.gguf", ModelRouter.route("open YouTube", models)!!.model)

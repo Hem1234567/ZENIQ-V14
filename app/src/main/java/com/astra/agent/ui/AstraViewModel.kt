@@ -89,7 +89,9 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
     val draft = MutableStateFlow("")
     private fun effective(): Settings {
         val s = settings.value
-        val extra = personal.promptExtra() + skillCtx
+        // Only stable text belongs in the system prompt: anything that changes per message would throw away
+        // the model's cached chat prefix and make every answer read the whole prompt again.
+        val extra = personal.promptExtra()
         return if (extra.isEmpty()) s else s.copy(systemPrompt = s.systemPrompt + extra)
     }
 
@@ -789,12 +791,15 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
         // so "summarize this" is about the new file and not about the previous answer.
         val inlineDocs = if (pending.isNotEmpty() && !(docReq != null && docReq.edit)) pending else emptyList()
         val inlineText = if (inlineDocs.isNotEmpty()) docMgr.inlineBlock(inlineDocs, text, docBudget(s)) else ""
+        // Skill guidance rides with this one message instead of the system prompt, so the chat prefix stays
+        // identical from turn to turn and the model only reads the new tokens.
+        val userTurn = if (skillCtx.isBlank()) modelText else skillCtx.trimEnd() + "\n\n" + modelText
         val userMsg: Msg
         if (inlineText.isNotEmpty()) {
             history.clear()
-            userMsg = Msg("user", inlineText + "REQUEST ABOUT THE ATTACHED FILE(S) ABOVE: " + modelText +
+            userMsg = Msg("user", inlineText + "REQUEST ABOUT THE ATTACHED FILE(S) ABOVE: " + userTurn +
                 "\n(Answer from the attached file text above. Do not answer from earlier messages.)", modelImages)
-        } else userMsg = Msg("user", modelText, modelImages)
+        } else userMsg = Msg("user", userTurn, modelImages)
         history.add(userMsg)
         val inlineNames = inlineDocs.map { it.name }.toSet()
 

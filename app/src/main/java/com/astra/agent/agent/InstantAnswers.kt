@@ -16,6 +16,8 @@ object InstantAnswers {
     private val timeQ = Regex("^(what('s| is)? (the )?(current )?time( now| right now)?|what time is it( now| right now)?|current time|time now|tell me the time)$", IC)
     private val dateQ = Regex("^(what('s| is)? (the )?(today'?s )?date( today)?|what day is (it|today)( today)?|today'?s date|what is today|which day is today)$", IC)
     private val whoQ = Regex("^(who are you|what('s| is) your name|what are you|who made you)$", IC)
+    private val howQ = Regex("^(how are you|how('s| is) it going|what'?s up|how do you do)( zeniq)?$", IC)
+    private val canQ = Regex("^(what can you do|what do you do|what are your features|what all can you do|help|features)$", IC)
     private val mathQ = Regex("^(?:what(?:'s| is)|calculate|calc|compute|solve|evaluate)?\\s*([-+*/%^().,\\dxX\u00D7\u00F7 ]{3,60})\\s*(?:=|equals)?$", IC)
 
     fun answer(raw: String, now: LocalDateTime = LocalDateTime.now()): String? {
@@ -32,6 +34,8 @@ object InstantAnswers {
         if (timeQ.matches(t)) return "It's " + now.format(DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH)) + "."
         if (dateQ.matches(t)) return "Today is " + now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.ENGLISH)) + "."
         if (whoQ.matches(t)) return "I'm ZENIQ, your personal AI assistant. I can chat, write documents and websites, work with your files, code, and control your phone."
+        if (howQ.matches(t)) return "I'm good, thanks! What can I do for you?"
+        if (canQ.matches(t)) return "I can chat and answer questions, write documents and websites, code, and control your phone: open apps, send messages, call, set alarms, take photos, browse and search. Short answers are instant; long ones are fastest in Fast Mode."
         val m = mathQ.find(t)
         if (m != null) {
             val expr = m.groupValues[1]
