@@ -28,6 +28,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.astra.agent.llm.Perf
 import com.astra.agent.llm.Providers
 
 @Composable
@@ -35,6 +36,8 @@ fun SettingsScreen(vm: AstraViewModel) {
     val c = LocalIos.current
     val ctx = LocalContext.current
     val s by vm.settings.collectAsState()
+    val speedText by vm.speedText.collectAsState()
+    var perfTick by remember { mutableIntStateOf(0) }
     val sliderColors = SliderDefaults.colors(
         thumbColor = c.accent, activeTrackColor = c.accent, inactiveTrackColor = c.fill
     )
@@ -281,6 +284,16 @@ fun SettingsScreen(vm: AstraViewModel) {
             }
         }
 
+        // ── Model choice ──────────────────────────────────────────────────────
+        SectionHeader("Model choice")
+        Group {
+            ToggleRow("Choose the model automatically", s.autoModel) { vm.updateSettings(s.copy(autoModel = it)) }
+            Hairline()
+            ToggleRow("Show measured speed under answers", s.perfOverlay) { vm.updateSettings(s.copy(perfOverlay = it)) }
+        }
+        Text("Auto uses the smallest installed model that fits each request and keeps the model that is already loaded, so a normal question never waits for a reload. The speed line reports numbers measured on this phone; nothing is uploaded.",
+            Modifier.padding(horizontal = 32.dp, vertical = 6.dp), fontSize = 12.sp, color = c.sub)
+
         // ── Performance ───────────────────────────────────────────────────────
         SectionHeader("Performance (reload model to apply)")
         Group {
@@ -294,6 +307,22 @@ fun SettingsScreen(vm: AstraViewModel) {
             Hairline()
             SliderRow("CPU threads", "${s.threads}") {
                 Slider(s.threads.toFloat(), { v -> vm.updateSettings(s.copy(threads = v.toInt().coerceAtLeast(1))) }, valueRange = 1f..8f, steps = 6, colors = sliderColors)
+            }
+        }
+
+        // ── Measurements ──────────────────────────────────────────────────────
+        SectionHeader("Measured on this phone")
+        Group {
+            Column(Modifier.padding(16.dp)) {
+                Text("Speed test (loaded model)", fontSize = 16.sp)
+                if (speedText.isNotBlank()) Text(speedText, Modifier.padding(top = 6.dp), fontSize = 13.sp, color = c.sub)
+                Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Pill("Run test") { vm.runSpeedTest() }
+                    Pill("Refresh") { perfTick++ }
+                    Pill("Clear") { Perf.clear(); perfTick++ }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(remember(perfTick) { Perf.report() }, fontSize = 12.sp, color = c.sub, lineHeight = 17.sp)
             }
         }
 
@@ -312,6 +341,13 @@ fun SettingsScreen(vm: AstraViewModel) {
             }
         }
     }
+}
+
+@Composable
+private fun Pill(label: String, onClick: () -> Unit) {
+    val c = LocalIos.current
+    Text(label, Modifier.clip(RoundedCornerShape(10.dp)).background(c.fill)
+        .pressScale(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp), fontSize = 14.sp)
 }
 
 @Composable

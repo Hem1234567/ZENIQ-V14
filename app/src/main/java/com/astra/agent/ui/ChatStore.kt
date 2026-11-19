@@ -60,7 +60,7 @@ class ChatStore(ctx: Context) {
                         .put("att", JSONArray().also { a -> it.attachments.forEach { x ->
                             a.put(JSONObject().put("n", x.name).put("p", x.pages).put("k", x.sizeKb).put("img", x.isImage)) } }))
                     is AssistantItem -> ia.put(JSONObject().put("t", "a").put("id", it.id)
-                        .put("think", it.thinking).put("text", it.text))
+                        .put("think", it.thinking).put("text", it.text).put("perf", it.perf))
                     is ToolItem -> ia.put(JSONObject().put("t", "t").put("id", it.id).put("name", it.name)
                         .put("args", it.args).put("result", it.result ?: "").put("ok", it.ok))
                     is InfoItem -> ia.put(JSONObject().put("t", "i").put("id", it.id).put("text", it.text).put("err", it.error))
@@ -110,7 +110,7 @@ class ChatStore(ctx: Context) {
                         }
                         items.add(UserItem(o.getString("id"), o.optString("text"), att))
                     }
-                    "a" -> items.add(AssistantItem(o.getString("id"), o.optString("think"), o.optString("text"), false))
+                    "a" -> items.add(AssistantItem(o.getString("id"), o.optString("think"), o.optString("text"), false, o.optString("perf")))
                     "t" -> items.add(ToolItem(o.getString("id"), o.optString("name"), o.optString("args"),
                         o.optString("result").ifBlank { null }, o.optBoolean("ok", true), false))
                     "p" -> {

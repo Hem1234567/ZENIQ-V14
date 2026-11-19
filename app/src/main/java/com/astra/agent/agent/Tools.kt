@@ -396,36 +396,16 @@ class ToolRegistry(ctx: Context) {
     }
 
     fun byName(n: String) = tools.firstOrNull { it.name == n }
-    private val coreTools = setOf("open_app", "open_url", "read_screen", "look_at_screen", "tap_text", "type_text", "press", "swipe",
-        "web_search", "search_web", "youtube_search", "take_photo", "wait", "browser_script")
 
     /** Every tool as an OpenAI function schema, for models that support native tool calling (Fast Mode). */
     fun nativeSpecs(): JSONArray = JSONArray().also { arr -> tools.forEach { arr.put(it.spec()) } }
 
-    /** The tools the model is told about: a core set plus the groups that match the request (keeps the prompt short and fast). */
-    fun specText(query: String = ""): String {
-        val q = query.lowercase()
-        val extra = HashSet<String>()
-        if (Regex("call|dial|phone|message|sms|text|whatsapp").containsMatchIn(q)) extra += listOf("call_number", "send_sms")
-        if (Regex("alarm|timer|remind|wake").containsMatchIn(q)) extra += listOf("set_alarm", "set_timer")
-        if (Regex("map|direction|navigate|route|nearby|where").containsMatchIn(q)) extra += "maps_search"
-        if (Regex("file|folder|read|write|save|shell|command|download|fetch|http|time|date").containsMatchIn(q))
-            extra += listOf("read_file", "write_file", "list_files", "run_shell", "http_get", "get_time")
-        if (Regex("browser|website|web page|webpage|site|login|sign in|click|form").containsMatchIn(q))
-            extra += listOf("browser_open", "browser_text", "browser_links", "browser_click", "browser_type", "browser_submit", "browser_eval")
-        if (Regex("coordinate|tap_xy|x,y").containsMatchIn(q)) extra += "tap_xy"
-        if (Regex("calendar|event|meeting|appointment|schedule").containsMatchIn(q)) extra += "add_calendar_event"
-        val plug = com.astra.agent.hub.PluginHub.findForRequest(query)
-        if (plug.isNotEmpty() || Regex("plugin|skill").containsMatchIn(q)) extra += listOf("plugin_list", "plugin_call", "skill_load")
-        var text = tools.filter { it.name in coreTools || it.name in extra }.joinToString("\n") { it.compact() }
-        if (plug.isNotEmpty()) {
-            val ready = plug.filter { com.astra.agent.hub.PluginHub.isReady(it.id) }
-            if (ready.isNotEmpty()) text += "\nPlugin actions for plugin_call(plugin, action, args as JSON):\n" + com.astra.agent.hub.PluginHub.actionDoc(ready)
-            val off = plug.filter { !com.astra.agent.hub.PluginHub.isReady(it.id) }
-            if (off.isNotEmpty()) text += "\nNot connected (tell the user to connect in + > Plugins): " + off.joinToString { it.name }
-        }
-        return text
-    }
+    /**
+     * The tool block the model is told about. It is the same on every turn of a chat on purpose: a tool list that
+     * changes with each question (the old behaviour) invalidated the KV-cache prefix and made every turn re-read the
+     * prompt. Plugin actions are reached through plugin_list / plugin_call, so they need no per-turn text.
+     */
+    fun stableSpec(): String = tools.joinToString("\n") { it.compact() }
 
     private fun safe(rel: String): File? {
         val f = File(workspace, rel).canonicalFile

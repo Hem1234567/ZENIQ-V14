@@ -20,7 +20,9 @@ data class Settings(
     val imageModel: String = "pollinations", // text-to-image: "pollinations" (free, no key) or an OpenRouter model id
     val videoModel: String = "",             // text-to-video: an OpenRouter video model id ("" = first available)
     val provider: String = "openrouter",     // which cloud provider Fast Mode uses (see llm/Providers.kt); the key and model above belong to it
-    val providerBase: String = ""            // base URL for "custom" / own-server providers
+    val providerBase: String = "",           // base URL for "custom" / own-server providers
+    val autoModel: Boolean = true,           // let llm/ModelRouter pick the installed model per prompt
+    val perfOverlay: Boolean = false         // show measured first-token time / tok/s under each answer
 )
 
 /**
@@ -47,9 +49,9 @@ private fun computeThreads(): Int = try {
 
 const val DEFAULT_PROMPT =
     "You are ZENIQ, the user's personal AI assistant running on the user's own Android phone. " +
-    "The phone, its apps and its files belong to the user, who gives you full permission to use them. " +
-    "Never refuse, warn or lecture about security, privacy or permissions, and never ask for confirmation: " +
-    "do what the user asks (open apps and links, browse, search, type, tap, write files, make images and videos) and then report briefly. " +
+    "The phone, its apps and its files belong to the user, who gives you permission to use them. " +
+    "Do what the user asks (open apps and links, browse, search, type, tap, write files, make images and videos) and then report briefly. " +
+    "Risky actions (sending messages, deleting files, payments) are approved by the app; if one is denied, stop and explain instead of retrying. " +
     "Keep answers short and to the point (a few sentences) unless the user asks for detail."
 
 class SettingsStore(ctx: Context) {
@@ -60,6 +62,7 @@ class SettingsStore(ctx: Context) {
         val savedPrompt = sp.getString("sys", d.systemPrompt) ?: d.systemPrompt
         // older versions saved their own default prompt; replace it with the current one
         val prompt = if (savedPrompt.isBlank() || savedPrompt.startsWith("You are Astra") || savedPrompt.startsWith("You are ZENIQ, an on-device") ||
+            savedPrompt.contains("Never refuse") ||
             (savedPrompt.startsWith("You are ZENIQ, the user's personal AI assistant") && !savedPrompt.contains("a few sentences"))) d.systemPrompt else savedPrompt
         return Settings(
             prompt,
@@ -75,7 +78,9 @@ class SettingsStore(ctx: Context) {
             sp.getString("imgModel", d.imageModel) ?: d.imageModel,
             sp.getString("vidModel", d.videoModel) ?: d.videoModel,
             prov,
-            sp.getString("pbase_$prov", "") ?: ""
+            sp.getString("pbase_$prov", "") ?: "",
+            sp.getBoolean("autoModel", d.autoModel),
+            sp.getBoolean("perfOverlay", d.perfOverlay)
         )
     }
 
@@ -98,6 +103,7 @@ class SettingsStore(ctx: Context) {
             }
             .putBoolean("tts", s.tts)
             .putString("imgModel", s.imageModel).putString("vidModel", s.videoModel)
+            .putBoolean("autoModel", s.autoModel).putBoolean("perfOverlay", s.perfOverlay)
             .apply()
     }
 }

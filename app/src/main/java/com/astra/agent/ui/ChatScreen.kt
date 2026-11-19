@@ -257,7 +257,7 @@ fun ChatScreen(vm: AstraViewModel, onOpenModels: () -> Unit, onMenu: () -> Unit 
                         Appear {
                             when (item) {
                                 is UserItem      -> UserBubble(item)
-                                is AssistantItem -> AssistantBlock(item)
+                                is AssistantItem -> AssistantBlock(item, settings.perfOverlay)
                                 is ToolItem      -> ToolCard(item)
                                 is DocItem       -> DocChip(item)
                                 is AppItem       -> AppCard(item,
@@ -369,6 +369,13 @@ fun ChatScreen(vm: AstraViewModel, onOpenModels: () -> Unit, onMenu: () -> Unit 
                         Text("Reading ${n.take(24)}\u2026", fontSize = 13.sp, color = c.sub)
                     }
                 }
+            }
+        }
+
+        // ── Model picker (local models only; Fast Mode shows the cloud model in the header) ──
+        if (!settings.fastMode) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
+                ModelChip(vm, model)
             }
         }
 
@@ -648,10 +655,9 @@ private fun UserBubble(item: UserItem) {
 }
 
 @Composable
-private fun AssistantBlock(a: AssistantItem) {
+private fun AssistantBlock(a: AssistantItem, showPerf: Boolean = false) {
     val c = LocalIos.current
     var open by remember { mutableStateOf(false) }
-    val displayText = a.text.ifBlank { if (!a.streaming && a.thinking.isNotBlank()) a.thinking else "" }
     Column {
         if (a.thinking.isNotBlank()) {
             val rot by animateFloatAsState(if (open) 90f else 0f, spring(0.7f), label = "rot")
@@ -667,10 +673,14 @@ private fun AssistantBlock(a: AssistantItem) {
             if (open) Text(a.thinking, Modifier.padding(start = 10.dp, bottom = 6.dp),
                 fontSize = 13.sp, color = c.sub, lineHeight = 18.sp)
         }
-        if (displayText.isNotBlank()) {
-            RichMessage(displayText, false)
-            if (!a.streaming) CopyButton(displayText, c.sub)
+        // The reasoning is never shown as the answer: a reply that only thought is an error, not a response.
+        if (a.text.isNotBlank()) {
+            RichMessage(a.text, false)
+            if (!a.streaming) CopyButton(a.text, c.sub)
         } else if (a.streaming && a.thinking.isBlank()) TypingDots()
+        if (showPerf && a.perf.isNotBlank()) {
+            Text(a.perf, Modifier.padding(top = 4.dp), fontSize = 11.sp, color = c.sub)
+        }
     }
 }
 

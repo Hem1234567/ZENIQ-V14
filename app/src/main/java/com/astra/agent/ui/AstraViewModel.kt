@@ -46,7 +46,9 @@ class ImageAttach(val id: String, val name: String, val b64: String, val thumb: 
 data class UserItem(override val id: String, val text: String, val attachments: List<AttachInfo> = emptyList(), val skills: List<String> = emptyList()) : ChatItem
 /** Confirmation that an @auto command created an automation card. */
 data class AutoCardItem(override val id: String, val cardId: String, val name: String, val request: String) : ChatItem
-data class AssistantItem(override val id: String, val thinking: String = "", val text: String = "", val streaming: Boolean = true) : ChatItem
+data class AssistantItem(override val id: String, val thinking: String = "", val text: String = "", val streaming: Boolean = true,
+                         /** Measured timing line ("local qwen.gguf · first 1.2s · 9.4 tok/s"), shown when Settings > Performance overlay is on. */
+                         val perf: String = "") : ChatItem
 data class ToolItem(override val id: String, val name: String, val args: String, val result: String? = null, val ok: Boolean = true, val waiting: Boolean = false) : ChatItem
 data class InfoItem(override val id: String, val text: String, val error: Boolean) : ChatItem
 data class DocItem(override val id: String, val docName: String, val pageCount: Int, val sizeKb: Int) : ChatItem
@@ -429,6 +431,56 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── Model choice: Auto (router) or one model the user picked ──────────────
+    fun setAutoModel(on: Boolean) {
+        updateSettings(settings.value.copy(autoModel = on))
+        if (!on) add(InfoItem(uid(), "Automatic model choice is off. ZENIQ keeps using ${LlmEngine.loadedName ?: "the current model"}.", false))
+    }
+
+    /** A model picked by hand wins every turn (the router only warns when it does not fit the request). */
+    fun selectModel(f: File) {
+        updateSettings(settings.value.copy(autoModel = false))
+        loadModel(f)
+    }
+
+    /**
+     * Picks the best installed model for this request when Automatic model choice is on. The router gives the
+     * already-loaded model a bonus, so ordinary questions never cause a reload.
+     */
+    private suspend fun autoSwitchModel(ask: String, hasImage: Boolean, hasDoc: Boolean) {
+        if (!settings.value.autoModel) return
+        if (settings.value.fastMode && settings.value.openRouterKey.isNotBlank()) return
+        val files = models.installed()
+        if (files.isEmpty()) return
+        val current = LlmEngine.loadedName
+        val views = files.map { ModelRouter.profileOf(it.name, it.length() / 1e9, it.name == current) }
+        val d = ModelRouter.route(ask, views, hasImage, hasDoc) ?: return
+        if (d.model == current) return
+        val f = files.firstOrNull { it.name == d.model } ?: return
+        loadingModel.value = true
+        liveStatus.value = "Switching to ${d.model.removeSuffix(".gguf")}\u2026"
+        val res = try { LlmEngine.loadDetailed(f, settings.value.nCtx, settings.value.threads) }
+                  catch (_: Throwable) { LlmEngine.LoadResult.Failed }
+        loadingModel.value = false
+        liveStatus.value = ""
+        if (res is LlmEngine.LoadResult.Ok) {
+            loadedModel.value = f.name
+            updateSettings(settings.value.copy(lastModel = f.name, nCtx = minOf(settings.value.nCtx, res.ctx)))
+            add(InfoItem(uid(), "Using ${d.model.removeSuffix(".gguf")} for this request (${d.reason}).", false))
+            try { LlmEngine.warmup(agent.warmupPrefix(effective())) } catch (_: Throwable) {}
+        } else {
+            // Loading frees the previous model first, so put it back: the request must still be answered.
+            val old = current?.let { n -> files.firstOrNull { it.name == n } }
+            if (old != null) {
+                try { LlmEngine.loadDetailed(old, settings.value.nCtx, settings.value.threads) } catch (_: Throwable) {}
+                loadedModel.value = LlmEngine.loadedName
+                add(InfoItem(uid(), "Couldn't switch to ${d.model.removeSuffix(".gguf")}; kept the current model.", true))
+            } else {
+                add(InfoItem(uid(), "Couldn't load ${d.model.removeSuffix(".gguf")}. Download a model or turn on Fast Mode.", true))
+            }
+        }
+    }
+
     // ── Downloads ─────────────────────────────────────────────────────────────
     fun download(url: String) {
         if (url.isBlank()) return
@@ -758,6 +810,7 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (intent == ReqIntent.DOC && docReq != null) buildDocCtx(docReq)
                     else docMgr.buildContext(text, docBudget(settings.value), inlineNames)
                 } catch (_: Exception) { "" }
+                if (intent == ReqIntent.CHAT) autoSwitchModel(text, hasImage = pendingImgs.isNotEmpty(), hasDoc = docCtx.isNotBlank())
                 agent.run(history, effective(), ui, docCtx, intent)
             } catch (e: CancellationException) {
                 add(InfoItem(uid(), "Stopped.", false))
@@ -1117,6 +1170,9 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         override fun onInfo(text: String, error: Boolean) {
             viewModelScope.launch(Dispatchers.Main) { add(InfoItem(uid(), text, error)) }
+        }
+        override fun onPerf(id: String, text: String) {
+            upd(id) { if (it is AssistantItem) it.copy(perf = text) else it }
         }
         override fun onFinalAnswer(text: String) {
             if (currentIntent == ReqIntent.SITE) { buildSite(text, lastRequest); return }

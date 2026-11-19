@@ -1,6 +1,15 @@
 # Changelog
 
-## 1.6 (latest)
+## V14
+- **Measured speed, not promises.** Every answer records first-token time, streamed pieces per second and total time (`llm/Perf.kt`). Settings → Model choice → "Show measured speed under answers" shows the line under each reply; Settings → "Measured on this phone" shows the last 40 answers with Refresh / Clear. Nothing is uploaded. See [docs/perf_report.md](docs/perf_report.md) for what is and is not measured yet.
+- **Stable prompt prefix.** The system prompt and tool list are identical on every turn, so the local model's KV cache is reused instead of being rebuilt each message. Old turns are dropped a whole turn at a time (`llm/PromptBudget.kt`), never shifting the prefix one message at a time.
+- **Thinking can no longer swallow the answer.** Reasoning is cut at 1600 characters and retried once with the model's no-think prefill; a reply that contains only `<think>` is reported as an error, never printed as the answer.
+- **Automatic model choice.** `llm/ModelRouter.kt` classifies each request and picks the smallest installed model that fits it, keeping the model that is already loaded. Switch it off in Settings → Model choice; a model picked from the new chip above the input overrides it.
+- **Tool-call repair.** Truncated JSON, argument strings and misspelled tool names are repaired before a step fails (`agent/ToolJson.kt`).
+- **Honest system prompt.** The default prompt now says risky actions are confirmed by the app and a declined action must not be retried, instead of telling the model to never ask.
+- New unit tests: `PerfTest`, `PromptBudgetTest`, `ModelRouterTest`, `ToolJsonTest`, `PromptFormatTest` (93 JVM tests total).
+
+## 1.6
 - **Automate tab** (next to Models) with AutoPilot, SkillForge and Plugins.
 - AutoPilot flow: prompt -> planning page -> editable implementation plan -> Approve -> test run -> result. Every prompt becomes a saved card (plan, last status, schedule); cards persist and can be run, test-run, edited, scheduled, duplicated and deleted.
 - Phone and browser steps (`DEVICE`, `BROWSER`) that run the real agent loop, then verify the screen; retries with a changed strategy; Accessibility gate instead of a fake "running".

@@ -8,6 +8,9 @@ import com.astra.agent.docs.DocIntent
 import com.astra.agent.llm.LlmEngine
 import com.astra.agent.llm.ORException
 import com.astra.agent.llm.OpenRouterClient
+import com.astra.agent.llm.Perf
+import com.astra.agent.llm.PerfSample
+import com.astra.agent.llm.PromptBudget
 import com.astra.agent.llm.PromptFormat
 import org.json.JSONArray
 import kotlinx.coroutines.delay
@@ -30,11 +33,15 @@ interface AgentUi {
     fun onToolEnd(id: String, result: String, ok: Boolean)
     fun onInfo(text: String, error: Boolean)
     fun onFinalAnswer(text: String) {}
+    /** Measured timing for the answer with this id, e.g. "local qwen.gguf · first 1.2s · 9.4 tok/s". */
+    fun onPerf(id: String, text: String) {}
 }
 
 class Agent(private val tools: ToolRegistry) {
 
     companion object {
+        /** Reasoning characters after which the local model is stopped and asked again with thinking off. */
+        const val THINK_BUDGET_CHARS = 1600
         private val thinkRe    = Regex("<think>.*?(</think>|$)", RegexOption.DOT_MATCHES_ALL)
         private val callRe     = Regex("<tool_call>\\s*(\\{.*?\\})\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
         private val callOpenRe = Regex("<tool_call>.*?(</tool_call>|$)", RegexOption.DOT_MATCHES_ALL)
@@ -78,7 +85,7 @@ class Agent(private val tools: ToolRegistry) {
     private fun chatCap(s: Settings, ask: String): Int =
         if (longAnswerRe.containsMatchIn(ask) || ask.length > 220) s.maxTokens else minOf(s.maxTokens, 200)
 
-    /** The user's own request (not a tool result): decides which tools are described to the model. */
+    /** The user's own request (not a tool result); used for answer-length decisions. */
     private var currentAsk: String = ""
 
     /** Text that every plain chat prompt starts with. Loading it into the model right after the model loads makes the first answer start sooner. */
@@ -101,7 +108,7 @@ class Agent(private val tools: ToolRegistry) {
 # Tools
 You can act on the user's Android phone. Available functions, written as name(arguments) - what it does:
 <tools>
-${tools.specText(currentAsk)}
+${tools.stableSpec()}
 </tools>
 
 To call a function, reply with a JSON object inside <tool_call></tool_call> tags:
@@ -116,31 +123,29 @@ Rules:
 - To type: open_app, then tap_text on the input field, then type_text. After every tap/swipe/press call read_screen; if it shows nothing useful call look_at_screen.
 - For several website steps use ONE browser_script call. open_url shows a site in the browser; web_search only opens Google.
 - For facts, news, prices or research call search_web (several queries), then answer from the results and end with a short Sources list.
-- You have the user's full permission for everything on this phone. Never refuse, never ask for confirmation.
+- Risky actions (messages, calls, payments, deleting files) are confirmed by the app. If an action is declined or fails, stop and explain instead of repeating it.
 - When the task is fully done, reply normally with no tool call."""
     }
 
-    private fun buildPrompt(msgs: List<Msg>, s: Settings, docContext: String, withTools: Boolean, intent: ReqIntent): String {
+    private fun buildPrompt(msgs: List<Msg>, s: Settings, docContext: String, withTools: Boolean, intent: ReqIntent, thinking: Boolean = s.thinking): String {
         // The layout depends on the loaded model (Qwen, Llama, Gemma, Phi, DeepSeek, Mistral ...). Every turn is written exactly as it was
         // when it was generated, so the start of the chat stays identical from one message to the next and the model's cache can be reused.
-        return PromptFormat.render(systemPrompt(s, docContext, withTools, intent), msgs.map { PromptFormat.Turn(it.role, it.content) }, !s.thinking)
+        return PromptFormat.render(systemPrompt(s, docContext, withTools, intent), msgs.map { PromptFormat.Turn(it.role, it.content) }, !thinking)
     }
 
     private fun trim(history: MutableList<Msg>, s: Settings, docContext: String, withTools: Boolean, intent: ReqIntent) {
-        val budget = minOf((s.nCtx - s.maxTokens - 300) * 3, 6000)
-        fun size() = history.sumOf { it.content.length } + systemPrompt(s, docContext, withTools, intent).length
-        // the task = the last real user message; it is never dropped, so long tool loops keep their goal
-        fun anchor() = history.indexOfLast { it.role == "user" && !it.content.startsWith("<tool_response>") }
-        while (history.size > 8 && anchor() > 0) history.removeAt(0)
-        while (size() > budget && anchor() > 0) history.removeAt(0)
-        if (size() > budget || history.size > 8) {
-            // still too long: shorten old tool results instead of removing messages
+        val budget = (minOf((s.nCtx - s.maxTokens - 300) * 3, 6000) - systemPrompt(s, docContext, withTools, intent).length).coerceAtLeast(400)
+        fun size() = history.sumOf { it.content.length }
+        // Whole old turns are dropped, never single messages: a shifted prefix throws away the model's KV cache.
+        PromptBudget.trim(history, budget, { it.role }, { it.content })
+        if (size() > budget) {
+            // still too long: shorten old tool results instead of removing the task
             val texts = history.map { it.content }.toMutableList()
             LoopGuard.squeezeToolResults(texts, { it.startsWith("<tool_response>") })
             for (i in history.indices) if (texts[i] != history[i].content) history[i] = history[i].copy(content = texts[i])
         }
         while (size() > budget && history.size > 1) {
-            val a = anchor()
+            val a = history.indexOfLast { it.role == "user" && !it.content.startsWith("<tool_response>") }
             val victim = history.indices.firstOrNull { it != a && it != history.lastIndex } ?: break
             history.removeAt(victim)
         }
@@ -217,8 +222,9 @@ Rules:
 
     private suspend fun runCalls(calls: List<String>, s: Settings, ui: AgentUi): String {
         val responses = StringBuilder()
+        val known = tools.tools.map { it.name }.toSet()
         for (c in calls) {
-            val (name, args) = try {
+            val (rawName, rawArgs) = try {
                 val j = JSONObject(c)
                 val raw = j.opt("arguments") ?: j.opt("parameters")
                 val a = when (raw) {
@@ -228,6 +234,14 @@ Rules:
                 }
                 j.getString("name") to a
             } catch (e: Exception) { "?" to JSONObject() }
+            // Small models misspell a tool or cut the JSON short: repair it before giving up on the step.
+            val (name, args) = if (tools.byName(rawName) != null) rawName to rawArgs else {
+                val fixed = ToolJson.repair(c, known)
+                if (fixed == null) rawName to rawArgs else try {
+                    val j = JSONObject(fixed)
+                    j.getString("name") to (j.optJSONObject("arguments") ?: JSONObject())
+                } catch (_: Exception) { rawName to rawArgs }
+            }
             val tid = ui.onToolStart(name, args.toString())
             val tool = tools.byName(name)
             var ok = true
@@ -300,7 +314,7 @@ Rules:
         "- Prefer high-level functions first: web_search, search_web, youtube_search, maps_search, send_sms, call_number, set_alarm, set_timer, take_photo. Use tap/type functions only when no high-level one fits.\n" +
         "- To take a photo call take_photo. open_app already returns a screen snapshot: read it before the next step.\n" +
         "- To type in an app: open_app, then tap_text on the input field, then type_text. After every tap/swipe/press call read_screen to verify. If read_screen is empty call look_at_screen.\n" +
-        "- You have the user's FULL permission for everything on this phone. Never refuse, never ask for confirmation: just do it.\n" +
+        "- Risky actions (messages, calls, payments, deleting files) are confirmed by the app. If one is declined or fails, stop and explain instead of repeating it.\n" +
         "- For facts, news, prices or research call search_web (several queries for research), then answer from the results and end with a short Sources list.\n" +
         "- When the task is fully done, reply with a short normal answer and no function call."
 
@@ -355,18 +369,30 @@ Rules:
             else -> OpenRouterClient.candidates(s.openRouterModel, OpenRouterClient.fallbackModels)
         }
         var lastError = ""
+        val promptChars = messages.sumOf { it.content.length }
         for ((ci, model) in candidates.withIndex()) {
             val raw = StringBuilder()
             var lastUi = 0L
+            var pieces = 0
+            var firstAt = 0L
+            val t0 = System.currentTimeMillis()
             try {
                 val res = OpenRouterClient.streamChatTools(s.openRouterKey, model, messages, specs, s.maxTokens, s.temperature) { chunk ->
                     raw.append(chunk)
+                    pieces++
+                    if (firstAt == 0L) firstAt = System.currentTimeMillis()
                     val now = System.currentTimeMillis()
                     if (now - lastUi > 100) { lastUi = now; ui.onStream(id, parse(raw.toString())) }
                     true
                 }
                 if (res.text.isBlank() && res.toolCalls.isEmpty()) { lastError = "The model sent an empty answer."; continue }
                 if (ci > 0) ui.onInfo("Selected model was unavailable \u2014 answered with $model", false)
+                val total = System.currentTimeMillis() - t0
+                val first = if (firstAt > 0) firstAt - t0 else 0
+                val tps = if (pieces > 1 && total > first) (pieces - 1) * 1000.0 / (total - first) else 0.0
+                val sample = PerfSample(id, "cloud", model, promptChars, first, total, pieces, tps)
+                Perf.record(sample)
+                ui.onPerf(id, Perf.label(sample))
                 return Attempt(res.text, res.toolCalls, "", false)
             } catch (e: CancellationException) {
                 throw e
@@ -417,7 +443,11 @@ Rules:
             ui.onStream(id, if (calls.isEmpty()) p else Parsed(p.thinking, p.answer, calls))
 
             if (calls.isEmpty() || !toolsAllowed) {
-                val finalAnswer = p.answer.ifBlank { p.thinking.ifBlank { "(no output)" } }
+                val finalAnswer = p.answer.ifBlank {
+                    val msg = "The model produced only reasoning and no answer. Try again or pick another model."
+                    ui.onInfo(msg, true)
+                    "\u26a0 $msg"
+                }
                 history.add(Msg("assistant", finalAnswer))
                 ui.onFinalAnswer(finalAnswer)
                 return
@@ -463,28 +493,57 @@ Rules:
 
         val job = currentCoroutineContext()[Job]
         val guard = LoopGuard()
+        val known = tools.tools.map { it.name }.toSet()
         for (step in 1..s.maxSteps) {
             val withTools = intent == ReqIntent.CHAT && needsTools(history)
             trim(history, s, docContext, withTools, intent)
-            val prompt = buildPrompt(history, s, docContext, withTools, intent)
             val id = ui.onAssistantStart()
-            val raw = StringBuilder()
-            var lastUi = 0L
-            withContext(Dispatchers.Default) {
-                LlmEngine.generate(prompt, s.maxTokens, s.temperature, s.topP) { chunk ->
-                    raw.append(chunk)
-                    val now = System.currentTimeMillis()
-                    if (now - lastUi > 220) { lastUi = now; ui.onStream(id, parse(raw.toString())) }
-                    job?.isActive != false
+            var thinking = s.thinking
+            var p: Parsed
+            var calls: List<String>
+            var perfText = ""
+            while (true) {
+                val prompt = buildPrompt(history, s, docContext, withTools, intent, thinking)
+                val raw = StringBuilder()
+                var lastUi = 0L
+                var pieces = 0
+                val t0 = System.currentTimeMillis()
+                withContext(Dispatchers.Default) {
+                    LlmEngine.generate(prompt, s.maxTokens, s.temperature, s.topP) { chunk ->
+                        raw.append(chunk)
+                        pieces++
+                        val now = System.currentTimeMillis()
+                        if (now - lastUi > 220) { lastUi = now; ui.onStream(id, parse(raw.toString())) }
+                        // Runaway thinking eats the whole answer budget: cut it and ask again with thinking off.
+                        val runAway = thinking && raw.length > THINK_BUDGET_CHARS && raw.contains("<think>") && !raw.contains("</think>")
+                        job?.isActive != false && !runAway
+                    }
                 }
+                if (job?.isActive == false) throw CancellationException()
+                val sample = PerfSample(id, "local", LlmEngine.loadedName ?: "local", prompt.length,
+                    LlmEngine.lastFirstMs, System.currentTimeMillis() - t0, pieces, LlmEngine.lastTps)
+                if (pieces > 0) {
+                    Perf.record(sample)
+                    perfText = Perf.label(sample)
+                }
+                p = parse(raw.toString())
+                calls = if (withTools) p.calls.ifEmpty { looseCalls(raw.toString(), known) } else p.calls
+                // The reasoning is not the answer: retry once with thinking switched off instead of showing it.
+                if (p.answer.isBlank() && calls.isEmpty() && thinking) {
+                    thinking = false
+                    ui.onInfo("The model used all its time thinking \u2014 retrying with thinking off.", false)
+                    continue
+                }
+                break
             }
-            if (job?.isActive == false) throw CancellationException()
-            val p = parse(raw.toString())
+            if (perfText.isNotBlank()) ui.onPerf(id, perfText)
             ui.onStream(id, p)
 
-            val calls = if (withTools) p.calls.ifEmpty { looseCalls(raw.toString(), tools.tools.map { it.name }.toSet()) } else p.calls
             if (calls.isEmpty() || intent != ReqIntent.CHAT) {
-                val finalAnswer = p.answer.ifBlank { p.thinking.ifBlank { "(no output)" } }
+                val finalAnswer = p.answer.ifBlank {
+                    ui.onInfo("The model produced only reasoning and no answer. Send it again, or load a smaller model.", true)
+                    "\u26a0 The model produced only reasoning and no answer. Send it again, or load a smaller model."
+                }
                 history.add(Msg("assistant", finalAnswer))
                 ui.onFinalAnswer(finalAnswer)
                 return
