@@ -115,6 +115,8 @@ object LlmEngine {
         try { android.os.Process.setThreadPriority(4) } catch (_: Throwable) {}
         try {
             if (loadedName == null) return
+            lastTps = 0.0            // a 1-piece answer must not inherit the previous answer's speed
+            lastFirstMs = 0
             val t0 = System.nanoTime()
             var tFirst = 0L
             var pieces = 0

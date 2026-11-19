@@ -195,6 +195,9 @@ Rules:
         return null
     }
 
+    /** True when the request maps onto one tool call and never needs the model. Used to skip a pointless model reload. */
+    fun handlesInstantly(text: String): Boolean = matchDirect(text)?.let { tools.byName(it.tool) != null } == true
+
     /** Returns true if the request was fully handled without calling the model. */
     private suspend fun tryDirectAction(history: MutableList<Msg>, s: Settings, ui: AgentUi): Boolean {
         val last = history.lastOrNull() ?: return false
@@ -443,10 +446,12 @@ Rules:
             ui.onStream(id, if (calls.isEmpty()) p else Parsed(p.thinking, p.answer, calls))
 
             if (calls.isEmpty() || !toolsAllowed) {
-                val finalAnswer = p.answer.ifBlank {
+                var finalAnswer = p.answer
+                if (finalAnswer.isBlank()) {
                     val msg = "The model produced only reasoning and no answer. Try again or pick another model."
                     ui.onInfo(msg, true)
-                    "\u26a0 $msg"
+                    finalAnswer = "\u26a0 $msg"
+                    ui.onStream(id, Parsed("", finalAnswer, emptyList()))
                 }
                 history.add(Msg("assistant", finalAnswer))
                 ui.onFinalAnswer(finalAnswer)
@@ -540,9 +545,12 @@ Rules:
             ui.onStream(id, p)
 
             if (calls.isEmpty() || intent != ReqIntent.CHAT) {
-                val finalAnswer = p.answer.ifBlank {
-                    ui.onInfo("The model produced only reasoning and no answer. Send it again, or load a smaller model.", true)
-                    "\u26a0 The model produced only reasoning and no answer. Send it again, or load a smaller model."
+                var finalAnswer = p.answer
+                if (finalAnswer.isBlank()) {
+                    val msg = "The model produced only reasoning and no answer. Send it again, or load a smaller model."
+                    ui.onInfo(msg, true)
+                    finalAnswer = "\u26a0 $msg"
+                    ui.onStream(id, Parsed("", finalAnswer, emptyList()))
                 }
                 history.add(Msg("assistant", finalAnswer))
                 ui.onFinalAnswer(finalAnswer)

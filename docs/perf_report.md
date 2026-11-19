@@ -26,7 +26,7 @@ Meaning of each field:
 - **tok** — number of streamed pieces in that answer.
 - **total** — wall-clock time from request to the last piece.
 
-Local numbers come from `LlamaBridge`/`LlmEngine`; cloud numbers are measured around the OpenRouter stream. The same journal feeds the "Speed test" button, which runs a fixed 64-token prompt with thinking off, so runs are comparable on the same model.
+Local numbers come from `LlamaBridge`/`LlmEngine`; cloud numbers are measured around the OpenRouter stream. The "Speed test" button uses the same timing code with a fixed 64-token prompt, so runs are comparable on the same model; it does not add a line to the journal.
 
 ## What is implemented for speed, without any speed claim
 

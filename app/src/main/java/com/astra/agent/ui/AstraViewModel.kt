@@ -450,6 +450,7 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
     private suspend fun autoSwitchModel(ask: String, hasImage: Boolean, hasDoc: Boolean) {
         if (!settings.value.autoModel) return
         if (settings.value.fastMode && settings.value.openRouterKey.isNotBlank()) return
+        if (loadingModel.value) return               // the user is loading a model right now: do not fight it
         val files = models.installed()
         if (files.isEmpty()) return
         val current = LlmEngine.loadedName
@@ -474,7 +475,11 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
             if (old != null) {
                 try { LlmEngine.loadDetailed(old, settings.value.nCtx, settings.value.threads) } catch (_: Throwable) {}
                 loadedModel.value = LlmEngine.loadedName
-                add(InfoItem(uid(), "Couldn't switch to ${d.model.removeSuffix(".gguf")}; kept the current model.", true))
+                val msg = if (LlmEngine.loadedName == old.name)
+                    "Couldn't switch to ${d.model.removeSuffix(".gguf")}; kept ${old.name.removeSuffix(".gguf")}."
+                else
+                    "Couldn't switch to ${d.model.removeSuffix(".gguf")}, and ${old.name.removeSuffix(".gguf")} didn't reload either. Open the Models tab and load a model."
+                add(InfoItem(uid(), msg, true))
             } else {
                 add(InfoItem(uid(), "Couldn't load ${d.model.removeSuffix(".gguf")}. Download a model or turn on Fast Mode.", true))
             }
@@ -810,7 +815,9 @@ class AstraViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (intent == ReqIntent.DOC && docReq != null) buildDocCtx(docReq)
                     else docMgr.buildContext(text, docBudget(settings.value), inlineNames)
                 } catch (_: Exception) { "" }
-                if (intent == ReqIntent.CHAT) autoSwitchModel(text, hasImage = pendingImgs.isNotEmpty(), hasDoc = docCtx.isNotBlank())
+                // An instant phone action is done without the model, so it must not pay for a model reload first.
+                if (intent == ReqIntent.CHAT && !agent.handlesInstantly(text))
+                    autoSwitchModel(text, hasImage = pendingImgs.isNotEmpty(), hasDoc = docCtx.isNotBlank())
                 agent.run(history, effective(), ui, docCtx, intent)
             } catch (e: CancellationException) {
                 add(InfoItem(uid(), "Stopped.", false))

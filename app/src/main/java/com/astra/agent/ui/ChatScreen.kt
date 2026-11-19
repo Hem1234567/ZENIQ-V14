@@ -372,8 +372,8 @@ fun ChatScreen(vm: AstraViewModel, onOpenModels: () -> Unit, onMenu: () -> Unit 
             }
         }
 
-        // ── Model picker (local models only; Fast Mode shows the cloud model in the header) ──
-        if (!settings.fastMode) {
+        // ── Model picker (whenever the local model is what answers; Fast Mode shows the cloud model in the header) ──
+        if (!(settings.fastMode && settings.openRouterKey.isNotBlank())) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
                 ModelChip(vm, model)
             }
